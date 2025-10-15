@@ -1,0 +1,66 @@
+import typing as t
+import uuid
+from openai import OpenAI
+from openai._models import FinalRequestOptions
+from openai._utils import is_given
+from notebookutils import mssparkutils
+
+# Replace this with your actual Fabric AI Skill endpoint
+base_url = ""
+
+# Use Fabric’s AAD token for the right resource
+token = mssparkutils.credentials.getToken('https://api.fabric.microsoft.com/')
+
+question = ""
+
+# Custom OpenAI client using Fabric endpoint and AAD token
+class FabricOpenAI(OpenAI):
+    def __init__(self, api_version: str = "2024-05-01-preview", **kwargs: t.Any) -> None:
+        default_query = kwargs.pop("default_query", {})
+        default_query["api-version"] = api_version
+        super().__init__(
+            api_key="",  # AAD token is used instead
+            base_url=base_url,
+            default_query=default_query,
+            **kwargs,
+        )
+
+    def _prepare_options(self, options: FinalRequestOptions) -> None:
+        headers = {**options.headers} if is_given(options.headers) else {}
+        headers["Authorization"] = f"Bearer {token}"
+        headers.setdefault("Accept", "application/json")
+        headers.setdefault("ActivityId", str(uuid.uuid4()))
+        options.headers = headers
+        return super()._prepare_options(options)
+
+# Create client and run assistant workflow
+fabric_client = FabricOpenAI()
+
+# Create assistant and thread
+assistant = fabric_client.beta.assistants.create(model="not used")  # model is ignored if Fabric handles it differently
+thread = fabric_client.beta.threads.create()
+
+# Send user message
+fabric_client.beta.threads.messages.create(
+    thread_id=thread.id,
+    role="user",
+    content=question,
+)
+
+# Run assistant
+run = fabric_client.beta.threads.runs.create(
+    thread_id=thread.id,
+    assistant_id=assistant.id,
+)
+
+# Wait for completion
+while run.status != "completed":
+    run = fabric_client.beta.threads.runs.retrieve(
+        thread_id=thread.id,
+        run_id=run.id,
+    )
+
+# Display the result
+for m in fabric_client.beta.threads.messages.list(thread_id=thread.id, order="asc"):
+    for c in m.content:
+        print(f"{m.role}: {c.text.value}")
